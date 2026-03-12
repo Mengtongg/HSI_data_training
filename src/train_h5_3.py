@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+from matplotlib import cm
 import numpy as np
 import pandas as pd
 from sklearn.pipeline import Pipeline
@@ -8,6 +9,9 @@ from sklearn.preprocessing import StandardScaler, normalize
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score, classification_report
 
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
 
 DATA_DIR = Path("artifacts") / "training_h5_2"
 
@@ -109,6 +113,27 @@ def run_a1(freq, X, y, groups, days, mapping):
             target_names=target_names,
             zero_division=0
         ))
+
+        # ===== Confusion Matrix =====
+        cm = confusion_matrix(y_test, y_pred)
+
+        plt.figure(figsize=(8,6))
+
+        sns.heatmap(
+            cm,
+            annot=True,
+            fmt="d",
+            cmap="Blues",
+            xticklabels=target_names,
+            yticklabels=target_names
+        )
+
+        plt.xlabel("Predicted Organ")
+        plt.ylabel("True Organ")
+        plt.title(f"Confusion Matrix (Test Day {test_day})")
+
+        plt.tight_layout()
+        plt.show()
 
         # file-level majority vote
         file_pred = majority_vote_per_file(y_pred, groups_test)
