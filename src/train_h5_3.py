@@ -29,6 +29,11 @@ FREQ_MAX = float(os.environ.get("HSI_FMAX", "748"))
 # ===== model parameter =====
 MAX_ITER = 4000
 
+# ===== Spectral Normalization(SNV) =====
+def snv(X):
+    mean = X.mean(axis=1, keepdims=True)
+    std = X.std(axis=1, keepdims=True) + 1e-8
+    return (X - mean) / std
 
 def majority_vote_per_file(y_pred, groups):
     votes = {}
@@ -90,9 +95,9 @@ def run_a1(freq, X, y, groups, days, mapping):
         X_test, y_test = X[test_mask], y[test_mask]
         groups_test = groups[test_mask]
 
-        # per-spectrum normalize first
-        X_train = normalize(X_train, norm="l2")
-        X_test = normalize(X_test, norm="l2")
+        # apply SNV normalization
+        X_train = snv(X_train)
+        X_test = snv(X_test)
 
         clf.fit(X_train, y_train)
         y_pred = clf.predict(X_test)
