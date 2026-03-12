@@ -2,17 +2,20 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import h5py
+import os
 
 from configs.paths import DATA_ROOT
 
 
 # Parameters 
 META_CSV = "metadata/metadata_h5.csv"
-OUTPUT_DIR = Path("artifacts")
-OUTPUT_DIR.mkdir(exist_ok=True)
 
-THRESHOLD_PERCENTILE = 80
-PIXELS_PER_FILE = 2000
+OUTPUT_ROOT = Path("artifacts")/ "training_h5_2"
+OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+
+THRESHOLD_PERCENTILE = int(os.environ.get("HSI_THRESH", 85))
+INNER_PERCENTILE = int(os.environ.get("HSI_INNER", 50))
+PIXELS_PER_FILE = int(os.environ.get("HSI_PIXELS", 1000))
 RANDOM_SEED = 42
 
 
@@ -52,6 +55,8 @@ def compute_common_freq_grid(meta_csv: str):
         with h5py.File(full_path, "r") as f:
             freq = f["SpectralHypercube"]["fr_real"][:].squeeze()
 
+        freq = np.asarray(freq, dtype=np.float32)
+
         mins.append(freq.min())
         maxs.append(freq.max())
 
@@ -85,7 +90,7 @@ def interp_spectra(freq_src, spectra_src, freq_tgt):
     return out
 
 
-def extract_valid_spectra(cube, sat, threshold_percentile=80, pixels_per_file=2000, rng=None):
+def extract_valid_spectra(cube, sat, threshold_percentile=85, inner_percentile=50, pixels_per_file=1000, rng=None):
     """
     Extract valid spectra from a single h5 cube
     logic:
@@ -94,6 +99,7 @@ def extract_valid_spectra(cube, sat, threshold_percentile=80, pixels_per_file=20
       3. sat mask = sat == 1
       4. valid mask = tissue & sat
       5. random sample fixed number of pixels
+      6. two masks -- outer for thresholding, inner for random sampling to ensure good coverage
 
     returns:
       spectra: (N, B)
@@ -104,20 +110,29 @@ def extract_valid_spectra(cube, sat, threshold_percentile=80, pixels_per_file=20
 
     mean_img = cube.mean(axis=0)  # (H,W)
 
-    # foreground mask
-    thresh = np.percentile(mean_img, threshold_percentile)
-    tissue_mask = mean_img > thresh
+    # ===== outer mask =====
+    outer_thresh = np.percentile(mean_img, threshold_percentile)
+    outer_mask = mean_img > outer_thresh
 
     # sat==1 is normal
     sat_mask = (sat == 1)
 
-    valid_mask = tissue_mask & sat_mask
+    valid_outer_mask = outer_mask & sat_mask
 
-    valid_pixels = np.where(valid_mask)
+
+    if valid_outer_mask.sum() == 0:
+        return np.empty((0, cube.shape[0]), dtype=np.float32), valid_outer_mask
+
+    # ===== inner mask =====
+    inner_values = mean_img[valid_outer_mask]
+    inner_thresh = np.percentile(inner_values, inner_percentile)
+    inner_mask = valid_outer_mask & (mean_img > inner_thresh)
+
+    valid_pixels = np.where(inner_mask)
     n_valid = len(valid_pixels[0])
 
     if n_valid == 0:
-        return np.empty((0, cube.shape[0]), dtype=np.float32), valid_mask
+        return np.empty((0, cube.shape[0]), dtype=np.float32), inner_mask
 
     sample_size = min(pixels_per_file, n_valid)
     chosen_idx = rng.choice(n_valid, size=sample_size, replace=False)
@@ -129,7 +144,7 @@ def extract_valid_spectra(cube, sat, threshold_percentile=80, pixels_per_file=20
     # selected spectra from cube, converted to (N,B)
     spectra = cube[:, xs, ys].T.astype(np.float32)
 
-    return spectra, valid_mask
+    return spectra, inner_mask
 
 
 def build_h5_dataset(meta_csv: str):
@@ -175,15 +190,12 @@ def build_h5_dataset(meta_csv: str):
         print(f"\nProcessing: {file_id}")
         cube, freq_src, sat = load_single_h5(full_path)
 
-        print("  cube shape:", cube.shape)
-        print("  freq shape:", freq_src.shape)
-        print("  sat shape :", sat.shape)
-
 
         spectra_src, valid_mask = extract_valid_spectra(
             cube=cube,
             sat=sat,
             threshold_percentile=THRESHOLD_PERCENTILE,
+            inner_percentile=INNER_PERCENTILE,
             pixels_per_file=PIXELS_PER_FILE,
             rng=rng
         )
@@ -222,6 +234,8 @@ def build_h5_dataset(meta_csv: str):
 if __name__ == "__main__":
     freq, X, y, groups, days, cond, organ_to_label = build_h5_dataset(META_CSV)
 
+    suffix = f"t{THRESHOLD_PERCENTILE}_i{INNER_PERCENTILE}_p{PIXELS_PER_FILE}"
+
     print("\nFinal dataset:")
     print("  freq:", freq.shape)
     print("  X   :", X.shape)
@@ -230,25 +244,19 @@ if __name__ == "__main__":
     print("  days unique  :", np.unique(days))
     print("  cond unique  :", np.unique(cond))
 
-    np.save(OUTPUT_DIR / "freq_h5.npy", freq)
-    np.save(OUTPUT_DIR / "X_h5.npy", X)
-    np.save(OUTPUT_DIR / "y_h5.npy", y)
-    np.save(OUTPUT_DIR / "groups_h5.npy", groups)
-    np.save(OUTPUT_DIR / "days_h5.npy", days)
-    np.save(OUTPUT_DIR / "cond_h5.npy", cond)
+    np.save(OUTPUT_ROOT / f"freq_h5_{suffix}.npy", freq)
+    np.save(OUTPUT_ROOT / f"X_h5_{suffix}.npy", X)
+    np.save(OUTPUT_ROOT / f"y_h5_{suffix}.npy", y)
+    np.save(OUTPUT_ROOT / f"groups_h5_{suffix}.npy", groups)
+    np.save(OUTPUT_ROOT / f"days_h5_{suffix}.npy", days)
+    np.save(OUTPUT_ROOT / f"cond_h5_{suffix}.npy", cond)
 
     # save label mapping
     mapping_df = pd.DataFrame({
         "organ": list(organ_to_label.keys()),
         "label": list(organ_to_label.values())
     })
-    mapping_df.to_csv(OUTPUT_DIR / "organ_mapping_h5.csv", index=False)
+    mapping_df.to_csv(OUTPUT_ROOT / f"organ_mapping_h5_{suffix}.csv", index=False)
 
     print("\nSaved:")
-    print("  artifacts/freq_h5.npy")
-    print("  artifacts/X_h5.npy")
-    print("  artifacts/y_h5.npy")
-    print("  artifacts/groups_h5.npy")
-    print("  artifacts/days_h5.npy")
-    print("  artifacts/cond_h5.npy")
-    print("  artifacts/organ_mapping_h5.csv")
+    print(OUTPUT_ROOT)

@@ -12,7 +12,7 @@ with h5py.File(h5_path, "r") as f:
 
 print("cube shape:", cube.shape)
 
-# 平均强度图
+# mean intensity image
 mean_img = cube.mean(axis=0)
 
 # saturation mask
@@ -20,7 +20,7 @@ sat_mask = (sat == 1)
 
 print("sat==1 pixels:", sat_mask.sum())
 
-# 要测试的 thresholds
+# thresholds to test
 percentiles = [70, 80, 90]
 
 plt.figure(figsize=(15,4))
@@ -53,19 +53,19 @@ for p in percentiles:
     print("threshold:", thresh)
     print("selected pixels:", n_pixels)
 
-    # 画 mask
+    # show mask
     plt.figure(figsize=(5,5))
     plt.imshow(valid_mask, cmap="gray")
     plt.title(f"Mask percentile {p}")
     plt.show()
 
-    # 提 spectra
+    # extract spectra
     spectra = cube[:, valid_mask].T
 
     if spectra.shape[0] == 0:
         continue
 
-    # 随机抽 20 条画图
+    # show random 20 spectra
     n_plot = min(20, spectra.shape[0])
     idx = np.random.choice(spectra.shape[0], n_plot, replace=False)
 
