@@ -1,0 +1,18 @@
+[project]
+name = "hsi_data_training"
+version = "0.1.0"
+description = "Hyperspectral imaging tissue classification experiments"
+authors = [{name="Mengtong Liao"}]
+requires-python = ">=3.9"
+
+dependencies = [
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "matplotlib",
+    "h5py",
+    "scipy"
+]
+
+[tool.setuptools]
+packages = ["src"]

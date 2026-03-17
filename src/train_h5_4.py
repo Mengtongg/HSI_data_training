@@ -108,7 +108,6 @@ def apply_sg_filter(X, window_length=11, polyorder=2):
 def run_a1(freq, X, y, groups, days, mapping):
     label_to_organ = dict(zip(mapping["label"], mapping["organ"]))
 
-    # IMPORTANT:
     # scaler + PCA are fitted on training only inside the pipeline
     clf = Pipeline([
         ("scaler", StandardScaler()),
