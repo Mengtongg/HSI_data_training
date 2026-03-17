@@ -220,7 +220,7 @@ This script should be used to reproduce the main results of the project.
 
 ## train_h5_4.py
 
-Additional preprocessing experiments.
+Additional preprocessing experiments and test for other classifier.
 
 Includes testing of:
 
@@ -233,7 +233,7 @@ Includes testing of:
 
 Observation:
 
-These preprocessing methods **did not improve performance compared with train_h5_3**.
+These preprocessing methods and other classifier **did not improve performance compared with train_h5_3**.
 
 Therefore train_h5_4 is included mainly for method comparison and completeness.
 
