@@ -141,6 +141,7 @@ Baseline classifier trained using the **TXT spectra dataset**.
 
 Classifier:
 - Logistic Regression
+- SVM classifier
 
 Evaluation:
 - leave-one-day-out cross validation
