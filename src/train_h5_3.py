@@ -15,6 +15,9 @@ from sklearn.svm import SVC
 from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix
 from scipy.signal import savgol_filter
 
+from scipy import sparse
+from scipy.sparse.linalg import spsolve
+
 DATA_DIR = Path("artifacts") / "training_h5_2"
 
 # ===== extraction parameter =====
@@ -44,6 +47,17 @@ DERIV_METHOD = os.environ.get("HSI_DERIV", "gradient")
 # Savitzky-Golay params (only used when DERIV_METHOD == "savgol_deriv")
 SG_WINDOW = int(os.environ.get("HSI_SG_WINDOW", "11"))
 SG_POLY = int(os.environ.get("HSI_SG_POLY", "2"))
+
+# ===== baseline correction parameter =====
+# Options:
+#   none  -> no baseline correction
+#   asls  -> asymmetric least squares baseline correction
+BASELINE_METHOD = os.environ.get("HSI_BASELINE", "none")
+
+# AsLS params
+BASELINE_LAM = float(os.environ.get("HSI_BASELINE_LAM", "1000000"))
+BASELINE_P = float(os.environ.get("HSI_BASELINE_P", "0.001"))
+BASELINE_NITER = int(os.environ.get("HSI_BASELINE_NITER", "5"))
 
 
 def majority_vote_per_file(y_pred, groups):
@@ -80,6 +94,56 @@ def apply_frequency_range(freq, X, fmin, fmax):
     X_sub = X[:, mask]
 
     return freq_sub, X_sub, mask.sum()
+
+def baseline_asls_single(y, lam=1e7, p=0.01, niter=5):
+    """
+    Asymmetric Least Squares baseline correction for one spectrum.
+
+    Parameters
+    ----------
+    y : np.ndarray
+        Shape (n_bands,)
+    lam : float
+        Smoothness parameter. Larger -> smoother baseline.
+    p : float
+        Asymmetry parameter. Small p puts baseline below peaks.
+    niter : int
+        Number of iterations.
+    """
+    L = len(y)
+    D = sparse.diags([1.0, -2.0, 1.0], [0, 1, 2], shape=(L - 2, L),format="csc")
+    w = np.ones(L)
+
+    for _ in range(niter):
+        W = sparse.diags(w, 0, shape=(L, L))
+        Z = (W + lam * (D.T @ D)).tocsc()
+        z = spsolve(Z, w * y)
+        w = p * (y > z) + (1 - p) * (y < z)
+
+    return y - z
+
+
+def apply_baseline_correction(X, method="none", lam=1e6, p=0.001, niter=5):
+    """
+    Apply baseline correction row by row.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        Shape (n_samples, n_bands)
+    method : str
+        'none' or 'asls'
+    """
+    if method == "none":
+        return X
+
+    if method == "asls":
+        X_corr = np.empty_like(X, dtype=np.float64)
+        for i in range(X.shape[0]):
+            X_corr[i] = baseline_asls_single(X[i], lam=lam, p=p, niter=niter)
+        return X_corr
+
+    raise ValueError(f"Unknown baseline correction method: {method}")
 
 
 def apply_derivative(X, freq, method="gradient", sg_window=11, sg_poly=2):
@@ -187,7 +251,10 @@ def run_a1(freq, X, y, groups, days, mapping):
     print(f"Derivative method: {DERIV_METHOD}")
     if DERIV_METHOD == "savgol_deriv":
         print(f"SG window={SG_WINDOW}, poly={SG_POLY}")
-    print("Model: StandardScaler + LogisticRegression")    
+    print("Model: StandardScaler + LogisticRegression")  
+    print(f"Baseline correction: {BASELINE_METHOD}")
+    if BASELINE_METHOD == "asls":
+        print(f"AsLS lambda={BASELINE_LAM}, p={BASELINE_P}, niter={BASELINE_NITER}")  
     # print(f"PCA components: {N_PCA}")
     print("====================================")
 
@@ -205,16 +272,32 @@ def run_a1(freq, X, y, groups, days, mapping):
         # X_train = apply_sg(X_train)
         # X_test  = apply_sg(X_test)
 
+        # ===== baseline correction =====
+        X_train_base = apply_baseline_correction(
+            X_train_raw,
+            method=BASELINE_METHOD,
+            lam=BASELINE_LAM,
+            p=BASELINE_P,
+            niter=BASELINE_NITER
+        )
+        X_test_base = apply_baseline_correction(
+            X_test_raw,
+            method=BASELINE_METHOD,
+            lam=BASELINE_LAM,
+            p=BASELINE_P,
+            niter=BASELINE_NITER
+        )
+
         # ===== derivative transformation =====
         X_train = apply_derivative(
-            X_train_raw,
+            X_train_base,
             freq,
             method=DERIV_METHOD,
             sg_window=SG_WINDOW,
             sg_poly=SG_POLY
         )
         X_test = apply_derivative(
-            X_test_raw,
+            X_test_base,
             freq,
             method=DERIV_METHOD,
             sg_window=SG_WINDOW,
@@ -307,8 +390,16 @@ def main():
     print(f"  number of bands:", n_bands)
 
     # ===== quick sanity check plot =====
-    X_preview = apply_derivative(
+    X_preview_base = apply_baseline_correction(
         X_sub[:5],
+        method=BASELINE_METHOD,
+        lam=BASELINE_LAM,
+        p=BASELINE_P,
+        niter=BASELINE_NITER
+    )
+
+    X_preview = apply_derivative(
+        X_preview_base,
         freq_sub,
         method=DERIV_METHOD,
         sg_window=SG_WINDOW,
@@ -322,7 +413,10 @@ def main():
     print(results)
 
     # save summary
-    summary_name = f"summary_{SUFFIX}_f{int(FREQ_MIN)}_{int(FREQ_MAX)}_{DERIV_METHOD}.csv"
+    summary_name = (
+    f"summary_{SUFFIX}_f{int(FREQ_MIN)}_{int(FREQ_MAX)}"
+    f"_base-{BASELINE_METHOD}_deriv-{DERIV_METHOD}.csv"
+    )
     results.to_csv(DATA_DIR / summary_name, index=False)
     print(f"\nSaved summary to: {DATA_DIR / summary_name}")
 
