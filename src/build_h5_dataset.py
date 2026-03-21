@@ -3,14 +3,15 @@ import numpy as np
 import pandas as pd
 import h5py
 import os
+import matplotlib.pyplot as plt
 
 from configs.paths import DATA_ROOT
 
 
-# Parameters 
+# Parameters
 META_CSV = "metadata/metadata_h5.csv"
 
-OUTPUT_ROOT = Path("artifacts")/ "training_h5_2"
+OUTPUT_ROOT = Path("artifacts") / "training_h5_2"
 OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 
 THRESHOLD_PERCENTILE = int(os.environ.get("HSI_THRESH", 85))
@@ -21,7 +22,8 @@ RANDOM_SEED = 42
 
 def load_single_h5(h5_path: Path):
     """
-    Read a single h5 file
+    Read a single h5 file.
+
     returns:
         cube: (B, H, W)
         freq: (B,)
@@ -37,6 +39,7 @@ def load_single_h5(h5_path: Path):
     sat = np.asarray(sat)
 
     return cube, freq, sat
+
 
 def compute_common_freq_grid(meta_csv: str):
     """
@@ -90,38 +93,53 @@ def interp_spectra(freq_src, spectra_src, freq_tgt):
     return out
 
 
-def extract_valid_spectra(cube, sat, threshold_percentile=85, inner_percentile=50, pixels_per_file=1000, rng=None):
+def extract_valid_spectra(
+    cube,
+    sat,
+    threshold_percentile=85,
+    inner_percentile=50,
+    pixels_per_file=1000,
+    rng=None
+):
     """
-    Extract valid spectra from a single h5 cube
+    Extract valid spectra from a single h5 cube.
+
     logic:
       1. mean intensity image
-      2. tissue mask = mean_img > percentile
+      2. outer mask = mean_img > outer percentile
       3. sat mask = sat == 1
-      4. valid mask = tissue & sat
-      5. random sample fixed number of pixels
-      6. two masks -- outer for thresholding, inner for random sampling to ensure good coverage
+      4. valid outer mask = outer mask & sat mask
+      5. inner threshold is computed inside valid outer mask
+      6. inner mask = valid outer mask & (mean_img > inner threshold)
+      7. randomly sample fixed number of valid pixels
 
     returns:
       spectra: (N, B)
-      valid_mask: (H, W)
+      inner_mask: (H, W)
+      stats: dict with valid pixel counts before sampling
     """
     if rng is None:
         rng = np.random.default_rng()
 
-    mean_img = cube.mean(axis=0)  # (H,W)
+    mean_img = cube.mean(axis=0)  # (H, W)
 
     # ===== outer mask =====
     outer_thresh = np.percentile(mean_img, threshold_percentile)
     outer_mask = mean_img > outer_thresh
 
-    # sat==1 is normal
+    # sat == 1 is valid
     sat_mask = (sat == 1)
 
     valid_outer_mask = outer_mask & sat_mask
+    n_valid_outer = int(valid_outer_mask.sum())
 
-
-    if valid_outer_mask.sum() == 0:
-        return np.empty((0, cube.shape[0]), dtype=np.float32), valid_outer_mask
+    if n_valid_outer == 0:
+        stats = {
+            "n_valid_outer": 0,
+            "n_valid_inner": 0,
+            "n_sampled": 0,
+        }
+        return np.empty((0, cube.shape[0]), dtype=np.float32), valid_outer_mask, stats
 
     # ===== inner mask =====
     inner_values = mean_img[valid_outer_mask]
@@ -129,22 +147,83 @@ def extract_valid_spectra(cube, sat, threshold_percentile=85, inner_percentile=5
     inner_mask = valid_outer_mask & (mean_img > inner_thresh)
 
     valid_pixels = np.where(inner_mask)
-    n_valid = len(valid_pixels[0])
+    n_valid_inner = len(valid_pixels[0])
 
-    if n_valid == 0:
-        return np.empty((0, cube.shape[0]), dtype=np.float32), inner_mask
+    if n_valid_inner == 0:
+        stats = {
+            "n_valid_outer": n_valid_outer,
+            "n_valid_inner": 0,
+            "n_sampled": 0,
+        }
+        return np.empty((0, cube.shape[0]), dtype=np.float32), inner_mask, stats
 
-    sample_size = min(pixels_per_file, n_valid)
-    chosen_idx = rng.choice(n_valid, size=sample_size, replace=False)
+    sample_size = min(pixels_per_file, n_valid_inner)
+    chosen_idx = rng.choice(n_valid_inner, size=sample_size, replace=False)
 
     xs = valid_pixels[0][chosen_idx]
     ys = valid_pixels[1][chosen_idx]
 
-    # cube shape = (B,H,W)
-    # selected spectra from cube, converted to (N,B)
+    # cube shape = (B, H, W)
+    # selected spectra from cube, converted to (N, B)
     spectra = cube[:, xs, ys].T.astype(np.float32)
 
-    return spectra, inner_mask
+    stats = {
+        "n_valid_outer": n_valid_outer,
+        "n_valid_inner": int(n_valid_inner),
+        "n_sampled": int(sample_size),
+    }
+
+    return spectra, inner_mask, stats
+
+
+def plot_valid_spectra_by_day(stats_df, value_col="n_valid_inner"):
+    """
+    Plot total valid spectra per organ by day before sampling.
+    value_col can be:
+      - n_valid_outer
+      - n_valid_inner
+      - n_sampled
+    """
+    count_df = (
+        stats_df.groupby(["day", "organ"])[value_col]
+        .sum()
+        .reset_index()
+    )
+
+    organs = sorted(stats_df["organ"].unique())
+    day_values = sorted(stats_df["day"].unique())
+
+    x = np.arange(len(organs))
+    width = 0.25
+
+    plt.figure(figsize=(12, 5))
+
+    for i, day in enumerate(day_values):
+        sub = (
+            count_df[count_df["day"] == day]
+            .set_index("organ")
+            .reindex(organs, fill_value=0)
+        )
+        plt.bar(x + i * width, sub[value_col], width=width, label=f"Day {day}")
+
+    plt.xticks(x + width, organs, rotation=45, ha="right")
+
+    ylabel_map = {
+        "n_valid_outer": "Total valid spectra before inner mask",
+        "n_valid_inner": "Total valid spectra before sampling",
+        "n_sampled": "Total sampled spectra",
+    }
+    title_map = {
+        "n_valid_outer": "Total valid spectra per organ by day (outer mask)",
+        "n_valid_inner": "Total valid spectra per organ by day (before sampling)",
+        "n_sampled": "Total sampled spectra per organ by day",
+    }
+
+    plt.ylabel(ylabel_map.get(value_col, value_col))
+    plt.title(title_map.get(value_col, value_col))
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
 
 
 def build_h5_dataset(meta_csv: str):
@@ -174,6 +253,9 @@ def build_h5_dataset(meta_csv: str):
     days_list = []
     cond_list = []
 
+    # new: file-level stats before sampling
+    file_stats_rows = []
+
     rng = np.random.default_rng(RANDOM_SEED)
 
     for _, row in meta.iterrows():
@@ -190,8 +272,7 @@ def build_h5_dataset(meta_csv: str):
         print(f"\nProcessing: {file_id}")
         cube, freq_src, sat = load_single_h5(full_path)
 
-
-        spectra_src, valid_mask = extract_valid_spectra(
+        spectra_src, valid_mask, stats = extract_valid_spectra(
             cube=cube,
             sat=sat,
             threshold_percentile=THRESHOLD_PERCENTILE,
@@ -200,6 +281,20 @@ def build_h5_dataset(meta_csv: str):
             rng=rng
         )
 
+        # save file-level stats no matter sampled or skipped
+        file_stats_rows.append({
+            "file_id": file_id,
+            "organ": organ,
+            "day": day,
+            "condition": condition,
+            "n_valid_outer": stats["n_valid_outer"],
+            "n_valid_inner": stats["n_valid_inner"],
+            "n_sampled": stats["n_sampled"],
+        })
+
+        print(f"  valid outer pixels : {stats['n_valid_outer']}")
+        print(f"  valid inner pixels : {stats['n_valid_inner']}")
+        print(f"  sampled spectra    : {stats['n_sampled']}")
 
         if spectra_src.shape[0] == 0:
             print("  WARNING: no valid spectra extracted, skipping.")
@@ -222,17 +317,19 @@ def build_h5_dataset(meta_csv: str):
     if len(X_list) == 0:
         raise ValueError("No spectra extracted from any h5 file.")
 
-    X = np.vstack(X_list)                      # (N,B)
+    X = np.vstack(X_list)                      # (N, B)
     y = np.concatenate(y_list)                # (N,)
     groups = np.concatenate(groups_list)      # (N,)
     days = np.concatenate(days_list)          # (N,)
     cond = np.concatenate(cond_list)          # (N,)
 
-    return freq_tgt, X, y, groups, days, cond, organ_to_label
+    file_stats_df = pd.DataFrame(file_stats_rows)
+
+    return freq_tgt, X, y, groups, days, cond, organ_to_label, file_stats_df
 
 
 if __name__ == "__main__":
-    freq, X, y, groups, days, cond, organ_to_label = build_h5_dataset(META_CSV)
+    freq, X, y, groups, days, cond, organ_to_label, file_stats_df = build_h5_dataset(META_CSV)
 
     suffix = f"t{THRESHOLD_PERCENTILE}_i{INNER_PERCENTILE}_p{PIXELS_PER_FILE}"
 
@@ -258,5 +355,16 @@ if __name__ == "__main__":
     })
     mapping_df.to_csv(OUTPUT_ROOT / f"organ_mapping_h5_{suffix}.csv", index=False)
 
+    # save file-level stats
+    stats_csv = OUTPUT_ROOT / f"file_stats_h5_{suffix}.csv"
+    file_stats_df.to_csv(stats_csv, index=False)
+
+    print("\nFile-level valid pixel stats:")
+    print(file_stats_df)
+
     print("\nSaved:")
     print(OUTPUT_ROOT)
+    print(stats_csv)
+
+    # plots
+    plot_valid_spectra_by_day(file_stats_df, value_col="n_valid_inner")
