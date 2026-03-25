@@ -1,6 +1,7 @@
 from pathlib import Path
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 
 from configs.paths import DATA_ROOT
 from src.loader import load_txt_spectra
@@ -55,6 +56,42 @@ def compute_common_grid(meta_csv: str, atol=1e-4):
     return freq_tgt
 
 
+def plot_txt_valid_spectra_by_day(file_stats_df):
+    """
+    Plot total valid spectra per organ by day for TXT dataset.
+    For TXT data, 'valid spectra' means all spectra stored in each TXT file,
+    since there is no inner/outer mask stage.
+    """
+    count_df = (
+        file_stats_df.groupby(["day", "organ"])["n_valid_spectra"]
+        .sum()
+        .reset_index()
+    )
+
+    organs = sorted(file_stats_df["organ"].unique())
+    day_values = sorted(file_stats_df["day"].unique())
+
+    x = np.arange(len(organs))
+    width = 0.25
+
+    plt.figure(figsize=(12, 5))
+
+    for i, day in enumerate(day_values):
+        sub = (
+            count_df[count_df["day"] == day]
+            .set_index("organ")
+            .reindex(organs, fill_value=0)
+        )
+        plt.bar(x + i * width, sub["n_valid_spectra"], width=width, label=f"Day {day}")
+
+    plt.xticks(x + width, organs, rotation=45, ha="right")
+    plt.ylabel("Total valid spectra")
+    plt.title("Total valid spectra per organ by day (TXT dataset)")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+
 def build_from_metadata(meta_csv: str):
     meta = pd.read_csv(meta_csv)
 
@@ -69,6 +106,9 @@ def build_from_metadata(meta_csv: str):
 
     X_list, y_list, groups_list, days_list, cond_list = [], [], [], [], []
 
+    # new: file-level stats for TXT dataset
+    file_stats_rows = []
+
     for _, row in meta.iterrows():
         file_id = str(row["file_id"])
         rel_path = str(row["path"])
@@ -81,7 +121,19 @@ def build_from_metadata(meta_csv: str):
             raise FileNotFoundError(f"File not found: {full_path}")
 
         freq_src, spectra_src = load_txt_spectra(str(full_path))  # (N, B_src)
-        spectra = interp_spectra(freq_src, spectra_src, freq_tgt) # (N, B_tgt)
+
+        # TXT dataset has no inner/outer mask
+        n_valid_spectra = spectra_src.shape[0]
+
+        file_stats_rows.append({
+            "file_id": file_id,
+            "organ": organ,
+            "day": day,
+            "condition": condition,
+            "n_valid_spectra": int(n_valid_spectra),
+        })
+
+        spectra = interp_spectra(freq_src, spectra_src, freq_tgt)  # (N, B_tgt)
 
         for s in spectra:
             X_list.append(s)
@@ -96,11 +148,13 @@ def build_from_metadata(meta_csv: str):
     days = np.array(days_list)
     cond = np.array(cond_list)
 
-    return freq_tgt, X, y, groups, days, cond
+    file_stats_df = pd.DataFrame(file_stats_rows)
+
+    return freq_tgt, X, y, groups, days, cond, file_stats_df
 
 
 if __name__ == "__main__":
-    freq, X, y, groups, days, cond = build_from_metadata("metadata/metadata.csv")
+    freq, X, y, groups, days, cond, file_stats_df = build_from_metadata("metadata/metadata.csv")
 
     print("Built dataset:")
     print("Freq bands:", freq.shape)
@@ -116,4 +170,14 @@ if __name__ == "__main__":
     np.save("artifacts/days.npy", days)
     np.save("artifacts/cond.npy", cond)
 
+    # save TXT file-level stats
+    file_stats_df.to_csv("artifacts/txt_file_stats.csv", index=False)
+
+    print("\nTXT file-level valid spectra stats:")
+    print(file_stats_df)
+
     print("Saved to artifacts/*.npy")
+    print("Saved TXT stats to artifacts/txt_file_stats.csv")
+
+    # plot
+    plot_txt_valid_spectra_by_day(file_stats_df)

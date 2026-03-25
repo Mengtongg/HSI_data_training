@@ -40,7 +40,6 @@ def load_single_h5(h5_path: Path):
 
     return cube, freq, sat
 
-
 def compute_common_freq_grid(meta_csv: str):
     """
     Build a common overlapping frequency grid across all H5 files.
