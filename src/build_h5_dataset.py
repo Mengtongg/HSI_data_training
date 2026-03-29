@@ -225,13 +225,28 @@ def plot_valid_spectra_by_day(stats_df, value_col="n_valid_inner"):
     plt.show()
 
 
-def build_h5_dataset(meta_csv: str):
+def build_h5_dataset(
+    meta_csv: str,
+    threshold_percentile=None,
+    inner_percentile=None,
+    pixels_per_file=None,
+    random_seed=None,
+):
     meta = pd.read_csv(meta_csv)
 
     required = {"file_id", "path", "day", "organ", "condition"}
     missing = required - set(meta.columns)
     if missing:
         raise ValueError(f"metadata missing columns: {missing}")
+
+    if threshold_percentile is None:
+        threshold_percentile = THRESHOLD_PERCENTILE
+    if inner_percentile is None:
+        inner_percentile = INNER_PERCENTILE
+    if pixels_per_file is None:
+        pixels_per_file = PIXELS_PER_FILE
+    if random_seed is None:
+        random_seed = RANDOM_SEED
 
     # organ to label mapping
     organ_names = sorted(meta["organ"].astype(str).str.strip().str.lower().unique())
@@ -255,7 +270,7 @@ def build_h5_dataset(meta_csv: str):
     # new: file-level stats before sampling
     file_stats_rows = []
 
-    rng = np.random.default_rng(RANDOM_SEED)
+    rng = np.random.default_rng(random_seed)
 
     for _, row in meta.iterrows():
         file_id = str(row["file_id"]).strip()
@@ -274,9 +289,9 @@ def build_h5_dataset(meta_csv: str):
         spectra_src, valid_mask, stats = extract_valid_spectra(
             cube=cube,
             sat=sat,
-            threshold_percentile=THRESHOLD_PERCENTILE,
-            inner_percentile=INNER_PERCENTILE,
-            pixels_per_file=PIXELS_PER_FILE,
+            threshold_percentile=threshold_percentile,
+            inner_percentile=inner_percentile,
+            pixels_per_file=pixels_per_file,
             rng=rng
         )
 
