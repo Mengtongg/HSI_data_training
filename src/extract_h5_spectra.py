@@ -21,7 +21,7 @@ sat_mask = (sat == 1)
 print("sat==1 pixels:", sat_mask.sum())
 
 # thresholds to test
-percentiles = [70, 80, 90]
+percentiles = [85, 80, 90]
 
 plt.figure(figsize=(15,4))
 plt.subplot(1,3,1)

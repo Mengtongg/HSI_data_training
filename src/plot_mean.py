@@ -1,29 +1,44 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-# load dataset you already built
-X = np.load("artifacts/X.npy")          # spectra (N, B)
+# load dataset
+X = np.load("artifacts/X.npy")
 y = np.load("artifacts/y.npy", allow_pickle=True)
-freq = np.load("artifacts/freq_thz.npy")  # frequency axis
+freq = np.load("artifacts/freq_thz.npy")
+days = np.load("artifacts/days.npy")   
 
 organs = np.unique(y)
+unique_days = np.unique(days)
 
-plt.figure(figsize=(10,6))
+# create subplots
+fig, axes = plt.subplots(1, len(unique_days), figsize=(15, 5), sharey=True)
 
-for organ in organs:
+for i, day in enumerate(unique_days):
+
+    ax = axes[i]
     
-    mask = y == organ
-    spectra = X[mask]
+    for organ in organs:
+        
+        mask = (y == organ) & (days == day)
+        spectra = X[mask]
 
-    mean_spectrum = spectra.mean(axis=0)
+        if len(spectra) == 0:
+            continue
 
-    plt.plot(freq, mean_spectrum, label=organ)
+        mean_spectrum = spectra.mean(axis=0)
 
-plt.xlabel("Frequency (THz)")
-plt.ylabel("Intensity (a.u.)")
-plt.title("Mean Spectrum per Organ")
-plt.legend()
-plt.grid(True)
+        ax.plot(freq, mean_spectrum, label=organ)
 
+    ax.set_title(f"Day {day}")
+    ax.set_xlabel("Frequency (THz)")
+    ax.grid(True)
+
+
+axes[0].set_ylabel("Mean Intensity (a.u.)")
+
+
+axes[-1].legend(loc="upper right", fontsize=8)
+
+plt.suptitle("Mean Spectrum per Organ by Acquisition Day")
 plt.tight_layout()
 plt.show()
